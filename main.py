@@ -21,10 +21,11 @@ class Net(nn.Module):
         #print(self.conv2.weight.shape)
         self.conv2_drop = nn.Dropout2d()
         self.fc1 = nn.Linear(320, 50)
-        self.rnn = nn.LSTM(input_size=50, hidden_size=150, num_layers=1, batch_first=True)
-        self.fc2 = nn.Linear(150, 10)
+        #self.rnn = nn.LSTM(input_size=50, hidden_size=150, num_layers=1, batch_first=True)
+        self.fc2 = nn.Linear(50, 10)
 
-        self.index_cap = 20000
+        self.index_cap = 60000
+        self.memory_on = False
         
         
 
@@ -34,25 +35,32 @@ class Net(nn.Module):
         x = x.view(-1, 320)
         x = F.relu(self.fc1(x))
         tmp = x.cpu().detach().numpy()
-        if self.training:
-            self.index.add(tmp)
-        if self.index.ntotal > self.index_cap:
-            remove_range = np.arange(0, self.index.ntotal-self.index_cap)
-            self.index.remove_ids(remove_range)
-        _, _, tmp3 = self.index.search_and_reconstruct(tmp, 5)
-        tmp3 = torch.as_tensor(tmp3, device=torch.device("cuda"))
-
         x = F.dropout(x, training=self.training)
         x = x.unsqueeze(1)
-        x = torch.cat((x, tmp3), dim=1)
-        x, (_, _) = self.rnn(x)
-        x = x[:,-1,:].squeeze(1)
         
+        if self.memory_on:
+            if self.training:
+                self.index.add(tmp)
+            if self.index.ntotal > self.index_cap:
+                remove_range = np.arange(0, self.index.ntotal-self.index_cap)
+                self.index.remove_ids(remove_range)
+            _, _, tmp3 = self.index.search_and_reconstruct(tmp, 5)
+            tmp3 = torch.as_tensor(tmp3, device=torch.device("cuda"))
+            x = torch.cat((x, tmp3), dim=1)
+        
+        x = torch.mean(x, dim=1)
         x = self.fc2(x)
         return F.log_softmax(x, dim=1)
+    
+    def activate_memory(self):
+        print("MEMORY ON")
+        self.memory_on = True
 
 def train(args, model, device, train_loader, optimizer, epoch):
     model.train()
+    
+    if epoch == args.memory_epoch: model.activate_memory()
+
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
         optimizer.zero_grad()
@@ -102,6 +110,8 @@ def main():
                         help='random seed (default: 1)')
     parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                         help='how many batches to wait before logging training status')
+    parser.add_argument('--memory_epoch', type=int, default=-1, help='epoch to activate memory saving on')
+    # parser.add_argument('--class_hints', default=False, action='store_true', help='adds class label hints to memories')
     args = parser.parse_args()
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
